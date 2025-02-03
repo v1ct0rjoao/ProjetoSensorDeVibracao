@@ -1,13 +1,11 @@
 import os
+import pandas as pd
 
-pasta_dados = (
-    "C:/Users/joaov/Documents/Programação/Python/ProjetoSensorDeVibracao/arquivos_txt"
-)
+# Caminho para a pasta dos arquivos de dados
+pasta_dados = "C:/Users/joaov/Documents/Programação/Python/ProjetoSensorDeVibracao/arquivos_txt"
 
-
-dados_referencia = {}
-
-
+# Lista para armazenar todos os dados que vão para o DataFrame
+dados_lista = []
 
 def processar_linha(linha):
     valores = {}
@@ -19,8 +17,7 @@ def processar_linha(linha):
             valores[chave.strip()] = float(valor.strip())  # Convertendo para float
     return valores
 
-
-# Ler cada arquivo e armazenar os dados no dicionário
+# Ler cada arquivo e armazenar os dados no DataFrame
 for arquivo in os.listdir(pasta_dados):
     if arquivo.endswith(".txt"):  # Garante que só pegue arquivos TXT
         caminho = os.path.join(pasta_dados, arquivo)
@@ -28,13 +25,18 @@ for arquivo in os.listdir(pasta_dados):
 
         with open(caminho, "r") as f:
             linhas = f.readlines()
-            # Armazena os valores processados no dicionário, ignorando linhas vazias
-            dados_referencia[nome_classe] = [
-                processar_linha(linha) for linha in linhas if linha.strip()
-            ]
+            # Processa cada linha do arquivo e adiciona ao DataFrame
+            for linha in linhas:
+                if linha.strip():  # Ignora linhas vazias
+                    valores = processar_linha(linha)
+                    # Adiciona o estado (nome_classe) como a coluna 'Estado'
+                    valores['Estado'] = nome_classe
+                    dados_lista.append(valores)
 
-# Exibir os dados carregados (para teste)
-for estado, valores in dados_referencia.items():
-    print(f"\nEstado: {estado}")
-    for v in valores[:5]:  # Exibir apenas os 5 primeiros para evitar poluir o terminal
-        print(v)
+# Cria o DataFrame com todos os dados coletados
+df = pd.DataFrame(dados_lista)
+
+# Exibe os primeiros registros para verificação
+print(df.head())
+
+# Agora o DataFrame 'df' está pronto para ser utilizado para o treinamento do modelo
