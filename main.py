@@ -1,97 +1,128 @@
+import os
 import serial
 import time
 import csv
-from datetime import datetime
-import os
+import joblib
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 
-# Configuração da porta serial
-arduino_port = 'COM3'  
+# 🔹 Configuração da porta serial
+arduino_port = 'COM3'  # Altere conforme necessário
 baud_rate = 115200
 ser = serial.Serial(arduino_port, baud_rate)
-time.sleep(2)  # Aguarda a conexão estabilizar
+time.sleep(2)
 
-# Função para ler e armazenar os dados
-def read_arduino_data(tempo_maximo=10):
-    with open("dados_vibracao.csv", "a", newline='') as file:  
+# 🔹 Caminhos dos arquivos
+pasta_referencia = r'C:\Users\joaov\Documents\Programação\Python\ProjetoSensorDeVibracao\arquivos_txt'
+modelo_path = "modelo_vibracao.pkl"
+scaler_path = "scaler.pkl"
+dados_csv_path = "dados_vibracao.csv"
+
+# 🔹 Inicializa contador de leituras
+contador_leituras = 0
+
+# 🔹 Função para processar uma linha recebida do sensor
+def processar_linha(linha):
+    valores = {}
+    partes = linha.strip().split("|")
+    for parte in partes:
+        if "=" in parte:
+            chave, valor = parte.split("=")
+            valores[chave.strip()] = float(valor.strip())
+    return valores
+
+# 🔹 Carregar dados de referência para treinamento
+def carregar_dados_referencia():
+    X, y = [], []
+    for arquivo in os.listdir(pasta_referencia):
+        if arquivo.endswith(".txt"):
+            caminho = os.path.join(pasta_referencia, arquivo)
+            estado_maquina = arquivo.replace(".txt", "")
+            with open(caminho, "r") as f:
+                linhas = f.readlines()
+                for linha in linhas:
+                    if linha.strip():
+                        valores = processar_linha(linha)
+                        if 'GAcX' in valores and 'GAcY' in valores and 'GAcZ' in valores:
+                            X.append([valores['GAcX'], valores['GAcY'], valores['GAcZ']])
+                            y.append(estado_maquina)
+    return X, y
+
+# 🔹 Treinar o modelo de Machine Learning
+def treinar_modelo():
+    X, y = carregar_dados_referencia()
+    
+    if not X or not y:
+        print("Nenhum dado de referência encontrado! O treinamento não pode ser feito.")
+        return None, None
+
+    scaler = StandardScaler()
+    X_normalized = scaler.fit_transform(X)
+
+    X_train, X_test, y_train, y_test = train_test_split(X_normalized, y, test_size=0.2, random_state=42)
+
+    modelo = RandomForestClassifier(n_estimators=100, random_state=42)
+    modelo.fit(X_train, y_train)
+
+    # Salvar modelo e scaler
+    joblib.dump(modelo, modelo_path)
+    joblib.dump(scaler, scaler_path)
+    print("✅ Modelo treinado e salvo com sucesso!")
+
+    return modelo, scaler
+
+# 🔹 Carregar modelo treinado (ou treinar se não existir)
+def carregar_modelo():
+    if os.path.exists(modelo_path) and os.path.exists(scaler_path):
+        try:
+            modelo = joblib.load(modelo_path)
+            scaler = joblib.load(scaler_path)
+            print("✅ Modelo carregado do arquivo!")
+            return modelo, scaler
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar o modelo: {e}. Treinando novamente...")
+    
+    return treinar_modelo()
+
+# 🔹 Ler dados do Arduino e prever estado da máquina
+def read_arduino_data():
+    global contador_leituras
+    modelo, scaler = carregar_modelo()
+
+    with open(dados_csv_path, "a", newline='') as file:
         writer = csv.writer(file)
-        
-        # Adiciona cabeçalho, caso o arquivo esteja vazio
         if file.tell() == 0:
-            writer.writerow(['Timestamp', 'Gravidade X', 'Gravidade Y', 'Gravidade Z'])
+            writer.writerow(['Timestamp', 'GAcX', 'GAcY', 'GAcZ'])
 
-        start_time = time.time()
-        while time.time() - start_time < tempo_maximo:  # Define tempo máximo de coleta de dados
+        while True:
             if ser.in_waiting > 0:
                 line = ser.readline()
                 try:
                     decoded_line = line.decode('utf-8', errors='ignore').strip()
                     if decoded_line:
-                        print(f"Dados recebidos: {decoded_line}")  
-                        # Processa e escreve os dados no CSV
-                        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        GAcX, GAcY, GAcZ = process_data(decoded_line)
-                        writer.writerow([timestamp, GAcX, GAcY, GAcZ])
+                        valores = processar_linha(decoded_line)
+                        if 'GAcX' in valores and 'GAcY' in valores and 'GAcZ' in valores:
+                            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            writer.writerow([timestamp, valores['GAcX'], valores['GAcY'], valores['GAcZ']])
+                            contador_leituras += 1
+
+                            # 🔹 A cada 1000 leituras, treina o modelo novamente
+                            if contador_leituras % 1000 == 0:
+                                print("🔄 Treinando modelo com novas leituras...")
+                                modelo, scaler = treinar_modelo()
+
+                            # 🔹 Normaliza os dados e prevê estado da máquina
+                            dados_normalizados = scaler.transform([[valores['GAcX'], valores['GAcY'], valores['GAcZ']]])
+                            estado_previsto = modelo.predict(dados_normalizados)[0]
+                            print(f"🟢 Estado previsto da máquina: {estado_previsto}")
                 except Exception as e:
-                    print(f"Erro ao processar a linha: {e}")
+                    print(f"⚠️ Erro ao processar a linha: {e}")
 
-# Função para processar os dados do sensor
-def process_data(data):
-    try:
-        values = data.split(" | ")
-        GAcX = float(values[0].split('= ')[1])
-        GAcY = float(values[1].split('= ')[1])
-        GAcZ = float(values[2].split('= ')[1])
-
-        print(f"Gravidade X: {GAcX} | Gravidade Y: {GAcY} | Gravidade Z: {GAcZ}")
-        return GAcX, GAcY, GAcZ
-        
-    except ValueError:
-        print("Erro ao processar os dados recebidos!")
-        return 0, 0, 0
-
-# Função para carregar os dados do CSV e treinar o modelo
-def treinar_modelo():
-    # Carregar os dados do CSV
-    df = pd.read_csv('dados_vibracao.csv')
-    print(df.head())
-
-    # Separar as características (X) e o rótulo (y)
-    X = df[['Gravidade X', 'Gravidade Y', 'Gravidade Z']]  # Características
-    y = df['Timestamp']  # Pode ser qualquer rótulo que você tenha (nesse caso, 'Timestamp')
-
-    # Normalizar os dados (não é estritamente necessário para RandomForest, mas ajuda em outros modelos)
-    scaler = StandardScaler()
-    X_normalized = scaler.fit_transform(X)
-
-    # Separar os dados em treinamento (80%) e teste (20%)
-    X_train, X_test, y_train, y_test = train_test_split(X_normalized, y, test_size=0.2, random_state=42)
-
-    # Modelo RandomForest
-    model_rf = RandomForestClassifier(n_estimators=100, random_state=42)
-
-    # Treinamento e avaliação do modelo RandomForest
-    model_rf.fit(X_train, y_train)
-    y_pred_rf = model_rf.predict(X_test)
-
-
-
-# Função principal para executar o código
-def main():
-    # Passo 1: Coletar e armazenar os dados do Arduino
-    print("Coletando dados do Arduino por 10 segundos...")
-    read_arduino_data(tempo_maximo=10)  # Defina o tempo máximo de coleta aqui
-
-    # Passo 2: Treinar o modelo Random Forest com os dados coletados
-    print("Treinando o modelo Random Forest...")
-    treinar_modelo()
-
-# Executar o programa
+# 🔹 Executar leitura contínua dos dados
 if __name__ == "__main__":
-    main()
+    read_arduino_data()
 
 ser.close()
